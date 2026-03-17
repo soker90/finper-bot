@@ -1,0 +1,146 @@
+import type { Context } from 'hono'
+import type { Env, TelegramUpdate } from '../types'
+import { downloadTelegramPhoto, sendTelegramMessage } from '../services/telegram'
+import { uploadToR2, getR2Key } from '../services/r2'
+import { extractReceiptData } from '../services/gemini'
+import { insertTicket } from '../db/tickets'
+import { generateId } from '../utils'
+
+/**
+ * Handles incoming Telegram webhook updates
+ * Validates the secret token, user whitelist, and processes photo messages
+ */
+export async function telegramWebhookHandler (c: Context<{ Bindings: Env }>): Promise<Response> {
+  // Validate Telegram secret token (sent as X-Telegram-Bot-Api-Secret-Token header)
+  const secretToken = c.req.header('X-Telegram-Bot-Api-Secret-Token')
+  if (!secretToken || secretToken !== c.env.TELEGRAM_SECRET_TOKEN) {
+    console.error('Invalid Telegram secret token')
+    return c.json({ ok: false }, 403)
+  }
+
+  let update: TelegramUpdate
+  try {
+    update = await c.req.json<TelegramUpdate>()
+  } catch {
+    return c.json({ ok: false, error: 'Invalid JSON' }, 400)
+  }
+
+  const message = update.message
+  if (!message) {
+    // Not a message update (could be edited_message, channel_post, etc.) — ignore
+    return c.json({ ok: true })
+  }
+
+  const chatId = message.chat.id
+  const userId = message.from?.id
+
+  // Whitelist check
+  const allowedUserId = parseInt(c.env.TELEGRAM_ALLOWED_USER_ID, 10)
+  if (userId !== allowedUserId) {
+    console.warn(`Unauthorized Telegram user: ${userId}`)
+    await sendTelegramMessage(
+      chatId,
+      '⛔ No tienes permiso para usar este bot.',
+      c.env.TELEGRAM_BOT_TOKEN
+    )
+    return c.json({ ok: true })
+  }
+
+  // Only process photo messages
+  if (!message.photo || message.photo.length === 0) {
+    if (message.text?.startsWith('/start') === true) {
+      await sendTelegramMessage(
+        chatId,
+        '👋 ¡Hola! Envíame una foto de un ticket y extraeré la fecha, comercio y total automáticamente.',
+        c.env.TELEGRAM_BOT_TOKEN
+      )
+    } else {
+      await sendTelegramMessage(
+        chatId,
+        '📸 Envíame una <b>foto</b> de un ticket para procesarla.',
+        c.env.TELEGRAM_BOT_TOKEN
+      )
+    }
+    return c.json({ ok: true })
+  }
+
+  // Acknowledge immediately — Telegram requires response within 5s
+  // We use waitUntil to process async without blocking the response
+  const processingPromise = processTicketPhoto(message.photo, message.message_id, chatId, c.env)
+  c.executionCtx.waitUntil(processingPromise)
+
+  await sendTelegramMessage(
+    chatId,
+    '⏳ Procesando ticket...',
+    c.env.TELEGRAM_BOT_TOKEN
+  )
+
+  return c.json({ ok: true })
+}
+
+async function processTicketPhoto (
+  photos: NonNullable<TelegramUpdate['message']>['photo'],
+  messageId: number,
+  chatId: number,
+  env: Env
+): Promise<void> {
+  if (!photos) return
+
+  // Pick the largest resolution photo (last in array)
+  const largestPhoto = photos[photos.length - 1]
+  if (!largestPhoto) return
+
+  try {
+    // 1. Download photo from Telegram
+    const { buffer } = await downloadTelegramPhoto(
+      largestPhoto.file_id,
+      env.TELEGRAM_BOT_TOKEN
+    )
+
+    // 2. Upload to R2
+    const ticketId = generateId()
+    const r2Key = getR2Key(ticketId)
+    await uploadToR2(env.TICKET_IMAGES, buffer, r2Key)
+
+    // 3. Extract data with Gemini Vision
+    const extraction = await extractReceiptData(buffer, env.GEMINI_API_KEY)
+
+    // 4. Save ticket to D1
+    await insertTicket(env.DB, {
+      id: ticketId,
+      telegram_message_id: messageId,
+      telegram_chat_id: chatId,
+      image_url: r2Key,   // R2 key — served via /images/* Worker route
+      date: extraction.date,
+      store: extraction.store,
+      amount: extraction.amount,
+      raw_text: extraction.raw_text,
+      created_at: Date.now()
+    })
+
+    // 5. Notify user with extracted data
+    const lines: string[] = ['✅ <b>Ticket procesado</b>']
+    lines.push(`🏪 Comercio: ${extraction.store ?? 'No detectado'}`)
+    lines.push(`📅 Fecha: ${extraction.date ? formatDate(extraction.date) : 'No detectada'}`)
+    lines.push(`💶 Total: ${extraction.amount != null ? `${extraction.amount.toFixed(2)} €` : 'No detectado'}`)
+    lines.push('')
+    lines.push('Puedes revisarlo en Finper → Tickets pendientes.')
+
+    await sendTelegramMessage(chatId, lines.join('\n'), env.TELEGRAM_BOT_TOKEN)
+  } catch (err) {
+    console.error('Error processing ticket:', err)
+    await sendTelegramMessage(
+      chatId,
+      '❌ Error al procesar el ticket. Inténtalo de nuevo.',
+      env.TELEGRAM_BOT_TOKEN
+    )
+  }
+}
+
+function formatDate (timestamp: number): string {
+  return new Date(timestamp).toLocaleDateString('es-ES', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  })
+}
