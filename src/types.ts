@@ -2,11 +2,12 @@ export interface Ticket {
   id: string
   telegram_message_id: number
   telegram_chat_id: number
-  image_url: string
+  image_url: string | null
   date: number | null
   store: string | null
   amount: number | null
   raw_text: string | null
+  payment_method: string | null
   status: 'pending' | 'reviewed'
   created_at: number
   reviewed_at: number | null
@@ -16,7 +17,8 @@ export interface GeminiExtraction {
   date: number | null     // Unix timestamp ms, or null if not found
   store: string | null    // Merchant name, or null if not found
   amount: number | null   // Total amount as number, or null if not found
-  raw_text: string        // kept for DB compatibility, always empty string
+  raw_text: string        // kept for DB compatibility, always empty string for photo tickets
+  payment_method: string | null  // Payment method (e.g. "efectivo", "tarjeta", "bankinter"), or null
 }
 
 export interface TelegramUpdate {

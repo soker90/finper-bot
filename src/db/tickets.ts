@@ -1,12 +1,12 @@
-import type { Ticket, Env } from '../types'
+import type { Ticket } from '../types'
 
 export async function insertTicket (
   db: D1Database,
   ticket: Omit<Ticket, 'status' | 'reviewed_at'>
 ): Promise<void> {
   await db.prepare(`
-    INSERT INTO tickets (id, telegram_message_id, telegram_chat_id, image_url, date, store, amount, raw_text, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    INSERT INTO tickets (id, telegram_message_id, telegram_chat_id, image_url, date, store, amount, raw_text, payment_method, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
   `).bind(
     ticket.id,
     ticket.telegram_message_id,
@@ -16,6 +16,7 @@ export async function insertTicket (
     ticket.store,
     ticket.amount,
     ticket.raw_text,
+    ticket.payment_method,
     ticket.created_at
   ).run()
 }

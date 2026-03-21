@@ -2,14 +2,14 @@ import type { Context } from 'hono'
 import type { Env, TelegramUpdate } from '../types'
 import { downloadTelegramPhoto, sendTelegramMessage } from '../services/telegram'
 import { uploadToR2, getR2Key } from '../services/r2'
-import { extractReceiptData } from '../services/gemini'
+import { extractReceiptData, extractExpenseFromText } from '../services/gemini'
 import { insertTicket } from '../db/tickets'
 import { isUserAllowed, addAllowedUser, removeAllowedUser, listAllowedUsers } from '../db/users'
 import { generateId } from '../utils'
 
 /**
  * Handles incoming Telegram webhook updates
- * Validates the secret token, user whitelist, and processes photo messages
+ * Validates the secret token, user whitelist, and processes photo and text messages
  */
 export async function telegramWebhookHandler (c: Context<{ Bindings: Env }>): Promise<Response> {
   // Validate Telegram secret token (sent as X-Telegram-Bot-Api-Secret-Token header)
@@ -52,14 +52,14 @@ export async function telegramWebhookHandler (c: Context<{ Bindings: Env }>): Pr
     }
   }
 
-  // Handle text commands
+  // Handle text messages
   if (message.text) {
     const text = message.text.trim()
 
     if (text.startsWith('/start')) {
       await sendTelegramMessage(
         chatId,
-        '👋 ¡Hola! Envíame una foto de un ticket y extraeré la fecha, comercio y total automáticamente.',
+        '👋 ¡Hola! Envíame una <b>foto</b> de un ticket o escribe el gasto directamente (por ejemplo: "He gastado 10€ en la frutería pagando con tarjeta").',
         c.env.TELEGRAM_BOT_TOKEN
       )
       return c.json({ ok: true })
@@ -128,22 +128,16 @@ export async function telegramWebhookHandler (c: Context<{ Bindings: Env }>): Pr
       }
     }
 
-    // Any other text
-    await sendTelegramMessage(
-      chatId,
-      '📸 Envíame una <b>foto</b> de un ticket para procesarla.',
-      c.env.TELEGRAM_BOT_TOKEN
-    )
+    // Free-text expense: process with Gemini
+    const processingPromise = processTicketText(text, message.message_id, chatId, userId, isAdmin, adminUserId, c.env)
+    c.executionCtx.waitUntil(processingPromise)
+
+    await sendTelegramMessage(chatId, '⏳ Procesando gasto...', c.env.TELEGRAM_BOT_TOKEN)
     return c.json({ ok: true })
   }
 
-  // Only process photo messages
+  // Handle photo messages
   if (!message.photo || message.photo.length === 0) {
-    await sendTelegramMessage(
-      chatId,
-      '📸 Envíame una <b>foto</b> de un ticket para procesarla.',
-      c.env.TELEGRAM_BOT_TOKEN
-    )
     return c.json({ ok: true })
   }
 
@@ -160,13 +154,67 @@ export async function telegramWebhookHandler (c: Context<{ Bindings: Env }>): Pr
   )
   c.executionCtx.waitUntil(processingPromise)
 
-  await sendTelegramMessage(
-    chatId,
-    '⏳ Procesando ticket...',
-    c.env.TELEGRAM_BOT_TOKEN
-  )
+  await sendTelegramMessage(chatId, '⏳ Procesando ticket...', c.env.TELEGRAM_BOT_TOKEN)
 
   return c.json({ ok: true })
+}
+
+async function processTicketText (
+  userText: string,
+  messageId: number,
+  chatId: number,
+  userId: number,
+  isAdmin: boolean,
+  adminUserId: number,
+  env: Env
+): Promise<void> {
+  try {
+    // 1. Extract data from text with Gemini
+    const extraction = await extractExpenseFromText(userText, env.GEMINI_API_KEY)
+
+    // 2. Save ticket to D1 (image_url = null, raw_text = original message)
+    const ticketId = generateId()
+    await insertTicket(env.DB, {
+      id: ticketId,
+      telegram_message_id: messageId,
+      telegram_chat_id: chatId,
+      image_url: null,
+      date: extraction.date,
+      store: extraction.store,
+      amount: extraction.amount,
+      raw_text: userText,
+      payment_method: extraction.payment_method,
+      created_at: Date.now()
+    })
+
+    // 3. Notify user with what was understood
+    const lines: string[] = ['✅ <b>Gasto registrado</b>']
+    lines.push(`🏪 Comercio: ${extraction.store ?? 'No detectado'}`)
+    lines.push(`📅 Fecha: ${extraction.date ? formatDate(extraction.date) : 'No detectada'}`)
+    lines.push(`💶 Total: ${extraction.amount != null ? `${extraction.amount.toFixed(2)} €` : 'No detectado'}`)
+    lines.push(`💳 Pago: ${extraction.payment_method ?? 'No detectado'}`)
+    lines.push('')
+    lines.push('Puedes revisarlo en Finper → Tickets pendientes.')
+
+    await sendTelegramMessage(chatId, lines.join('\n'), env.TELEGRAM_BOT_TOKEN)
+
+    // 4. Notify admin if the sender is not the admin
+    if (!isAdmin) {
+      const adminLines: string[] = [`🔔 <b>Nuevo gasto de usuario <code>${userId}</code></b>`, '']
+      adminLines.push(`🏪 Comercio: ${extraction.store ?? 'No detectado'}`)
+      adminLines.push(`📅 Fecha: ${extraction.date ? formatDate(extraction.date) : 'No detectada'}`)
+      adminLines.push(`💶 Total: ${extraction.amount != null ? `${extraction.amount.toFixed(2)} €` : 'No detectado'}`)
+      adminLines.push(`💳 Pago: ${extraction.payment_method ?? 'No detectado'}`)
+      await sendTelegramMessage(adminUserId, adminLines.join('\n'), env.TELEGRAM_BOT_TOKEN)
+    }
+  } catch (err) {
+    console.error('Error processing text expense:', err)
+    await sendTelegramMessage(
+      chatId,
+      '❌ Error al procesar el gasto. Inténtalo de nuevo.',
+      env.TELEGRAM_BOT_TOKEN
+    )
+  }
 }
 
 async function processTicketPhoto (
@@ -204,11 +252,12 @@ async function processTicketPhoto (
       id: ticketId,
       telegram_message_id: messageId,
       telegram_chat_id: chatId,
-      image_url: r2Key,   // R2 key — served via /images/* Worker route
+      image_url: r2Key,
       date: extraction.date,
       store: extraction.store,
       amount: extraction.amount,
       raw_text: extraction.raw_text,
+      payment_method: extraction.payment_method,
       created_at: Date.now()
     })
 
@@ -217,6 +266,7 @@ async function processTicketPhoto (
     lines.push(`🏪 Comercio: ${extraction.store ?? 'No detectado'}`)
     lines.push(`📅 Fecha: ${extraction.date ? formatDate(extraction.date) : 'No detectada'}`)
     lines.push(`💶 Total: ${extraction.amount != null ? `${extraction.amount.toFixed(2)} €` : 'No detectado'}`)
+    lines.push(`💳 Pago: ${extraction.payment_method ?? 'No detectado'}`)
     lines.push('')
     lines.push('Puedes revisarlo en Finper → Tickets pendientes.')
 
@@ -228,6 +278,7 @@ async function processTicketPhoto (
       adminLines.push(`🏪 Comercio: ${extraction.store ?? 'No detectado'}`)
       adminLines.push(`📅 Fecha: ${extraction.date ? formatDate(extraction.date) : 'No detectada'}`)
       adminLines.push(`💶 Total: ${extraction.amount != null ? `${extraction.amount.toFixed(2)} €` : 'No detectado'}`)
+      adminLines.push(`💳 Pago: ${extraction.payment_method ?? 'No detectado'}`)
       await sendTelegramMessage(adminUserId, adminLines.join('\n'), env.TELEGRAM_BOT_TOKEN)
     }
   } catch (err) {

@@ -5,12 +5,13 @@ CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY,
   telegram_message_id INTEGER NOT NULL,
   telegram_chat_id INTEGER NOT NULL,
-  image_url TEXT NOT NULL,
+  image_url TEXT,                          -- nullable: text-sourced tickets have no image
   -- Data extracted by Gemini
-  date INTEGER,            -- Unix timestamp (ms) extracted from ticket
-  store TEXT,              -- Merchant/store name extracted
-  amount REAL,             -- Total amount extracted
-  raw_text TEXT,           -- Full text extracted by Gemini (for future use)
+  date INTEGER,                            -- Unix timestamp (ms) extracted from ticket
+  store TEXT,                              -- Merchant/store name extracted
+  amount REAL,                             -- Total amount extracted
+  raw_text TEXT,                           -- Original user message (text tickets) or full OCR text
+  payment_method TEXT,                     -- Payment method extracted (e.g. "efectivo", "tarjeta", "bankinter")
   -- Status
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | reviewed
   created_at INTEGER NOT NULL,
