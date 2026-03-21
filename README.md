@@ -18,6 +18,24 @@ Bot de Telegram para procesar fotos de tickets de compra. Extrae automáticament
                                                [Finper consulta pendientes]
 ```
 
+## Acceso y permisos
+
+El bot soporta múltiples usuarios. Hay un **admin** (configurado via secret `TELEGRAM_ADMIN_USER_ID`) y usuarios adicionales que el admin puede gestionar mediante comandos.
+
+Los usuarios no autorizados son ignorados completamente — el bot no responde ni da señales de estar activo.
+
+### Comandos del admin
+
+| Comando | Descripción |
+|---|---|
+| `/adduser <id>` | Permite a un usuario enviar tickets |
+| `/removeuser <id>` | Revoca el acceso de un usuario |
+| `/listusers` | Lista todos los usuarios con acceso |
+
+Para obtener el Telegram user ID de alguien, pídele que escriba a [@userinfobot](https://t.me/userinfobot).
+
+Cuando un usuario no-admin sube un ticket exitosamente, el admin recibe una notificación con el resumen del ticket.
+
 ## Setup inicial
 
 ### 1. Instalar dependencias
@@ -52,10 +70,10 @@ pnpm db:migrate:remote
 
 ```bash
 wrangler secret put TELEGRAM_BOT_TOKEN
-wrangler secret put TELEGRAM_SECRET_TOKEN   # genera uno aleatorio: openssl rand -hex 32
-wrangler secret put TELEGRAM_ALLOWED_USER_ID  # tu user ID de Telegram (usa @userinfobot para obtenerlo)
-wrangler secret put GEMINI_API_KEY            # https://aistudio.google.com/apikey
-wrangler secret put API_SECRET_KEY            # clave para que finper-api se autentique: openssl rand -hex 32
+wrangler secret put TELEGRAM_SECRET_TOKEN    # genera uno aleatorio: openssl rand -hex 32
+wrangler secret put TELEGRAM_ADMIN_USER_ID   # tu user ID de Telegram (usa @userinfobot para obtenerlo)
+wrangler secret put GEMINI_API_KEY           # https://aistudio.google.com/apikey
+wrangler secret put API_SECRET_KEY           # clave para que finper-api se autentique: openssl rand -hex 32
 ```
 
 ### 5. Desplegar el Worker
@@ -76,7 +94,7 @@ TELEGRAM_BOT_TOKEN=xxx TELEGRAM_SECRET_TOKEN=yyy WORKER_URL=https://ticket-bot.t
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Token del bot de @BotFather |
 | `TELEGRAM_SECRET_TOKEN` | Token secreto para validar webhooks de Telegram |
-| `TELEGRAM_ALLOWED_USER_ID` | Tu user ID de Telegram (whitelist) |
+| `TELEGRAM_ADMIN_USER_ID` | User ID de Telegram del administrador |
 | `GEMINI_API_KEY` | API key de Google AI Studio (gratuita) |
 | `API_SECRET_KEY` | Clave para autenticar peticiones de finper-api |
 
@@ -108,6 +126,14 @@ Devuelve la lista de tickets. `status` puede ser `pending`, `reviewed` o `all`.
 ### `PATCH /api/tickets/:id`
 
 Marca un ticket como revisado (tras crear la transacción en Finper).
+
+```json
+{ "success": true, "id": "abc123" }
+```
+
+### `DELETE /api/tickets/:id`
+
+Elimina un ticket.
 
 ```json
 { "success": true, "id": "abc123" }
