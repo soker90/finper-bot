@@ -4,6 +4,7 @@ import { downloadTelegramPhoto, sendTelegramMessage } from '../services/telegram
 import { uploadToR2, getR2Key } from '../services/r2'
 import { extractReceiptData } from '../services/gemini'
 import { insertTicket } from '../db/tickets'
+import { isUserAllowed, addAllowedUser, removeAllowedUser, listAllowedUsers } from '../db/users'
 import { generateId } from '../utils'
 
 /**
@@ -34,13 +35,103 @@ export async function telegramWebhookHandler (c: Context<{ Bindings: Env }>): Pr
   const chatId = message.chat.id
   const userId = message.from?.id
 
-  // Whitelist check
-  const allowedUserId = parseInt(c.env.TELEGRAM_ALLOWED_USER_ID, 10)
-  if (userId !== allowedUserId) {
-    console.warn(`Unauthorized Telegram user: ${userId}`)
+  if (!userId) {
+    return c.json({ ok: true })
+  }
+
+  // Determine if this user is the admin
+  const adminUserId = parseInt(c.env.TELEGRAM_ADMIN_USER_ID, 10)
+  const isAdmin = userId === adminUserId
+
+  // Check access: admin always allowed, others checked against DB
+  if (!isAdmin) {
+    const allowed = await isUserAllowed(c.env.DB, userId)
+    if (!allowed) {
+      console.warn(`Unauthorized Telegram user: ${userId}`)
+      return c.json({ ok: true })
+    }
+  }
+
+  // Handle text commands
+  if (message.text) {
+    const text = message.text.trim()
+
+    if (text.startsWith('/start')) {
+      await sendTelegramMessage(
+        chatId,
+        '👋 ¡Hola! Envíame una foto de un ticket y extraeré la fecha, comercio y total automáticamente.',
+        c.env.TELEGRAM_BOT_TOKEN
+      )
+      return c.json({ ok: true })
+    }
+
+    // Admin-only commands
+    if (text.startsWith('/adduser') || text.startsWith('/removeuser') || text.startsWith('/listusers')) {
+      if (!isAdmin) {
+        return c.json({ ok: true })
+      }
+
+      if (text.startsWith('/adduser')) {
+        const parts = text.split(/\s+/)
+        const targetId = parts[1] ? parseInt(parts[1], 10) : NaN
+        if (isNaN(targetId)) {
+          await sendTelegramMessage(chatId, '⚠️ Uso: /adduser <id_de_telegram>', c.env.TELEGRAM_BOT_TOKEN)
+          return c.json({ ok: true })
+        }
+        if (targetId === adminUserId) {
+          await sendTelegramMessage(chatId, 'ℹ️ El administrador ya tiene acceso por defecto.', c.env.TELEGRAM_BOT_TOKEN)
+          return c.json({ ok: true })
+        }
+        const added = await addAllowedUser(c.env.DB, targetId, adminUserId)
+        if (added) {
+          await sendTelegramMessage(chatId, `✅ Usuario <code>${targetId}</code> añadido correctamente.`, c.env.TELEGRAM_BOT_TOKEN)
+        } else {
+          await sendTelegramMessage(chatId, `ℹ️ El usuario <code>${targetId}</code> ya tenía acceso.`, c.env.TELEGRAM_BOT_TOKEN)
+        }
+        return c.json({ ok: true })
+      }
+
+      if (text.startsWith('/removeuser')) {
+        const parts = text.split(/\s+/)
+        const targetId = parts[1] ? parseInt(parts[1], 10) : NaN
+        if (isNaN(targetId)) {
+          await sendTelegramMessage(chatId, '⚠️ Uso: /removeuser <id_de_telegram>', c.env.TELEGRAM_BOT_TOKEN)
+          return c.json({ ok: true })
+        }
+        if (targetId === adminUserId) {
+          await sendTelegramMessage(chatId, '⛔ No puedes eliminar al administrador.', c.env.TELEGRAM_BOT_TOKEN)
+          return c.json({ ok: true })
+        }
+        const removed = await removeAllowedUser(c.env.DB, targetId)
+        if (removed) {
+          await sendTelegramMessage(chatId, `✅ Usuario <code>${targetId}</code> eliminado correctamente.`, c.env.TELEGRAM_BOT_TOKEN)
+        } else {
+          await sendTelegramMessage(chatId, `ℹ️ El usuario <code>${targetId}</code> no estaba en la lista.`, c.env.TELEGRAM_BOT_TOKEN)
+        }
+        return c.json({ ok: true })
+      }
+
+      if (text.startsWith('/listusers')) {
+        const users = await listAllowedUsers(c.env.DB)
+        if (users.length === 0) {
+          await sendTelegramMessage(chatId, 'ℹ️ No hay usuarios adicionales con acceso.\n\nSolo tú (admin) tienes acceso actualmente.', c.env.TELEGRAM_BOT_TOKEN)
+        } else {
+          const lines = ['👥 <b>Usuarios con acceso:</b>', '']
+          lines.push(`• <code>${adminUserId}</code> — admin (tú)`)
+          for (const u of users) {
+            const date = new Date(u.added_at).toLocaleDateString('es-ES')
+            lines.push(`• <code>${u.user_id}</code> — añadido el ${date}`)
+          }
+          await sendTelegramMessage(chatId, lines.join('\n'), c.env.TELEGRAM_BOT_TOKEN)
+        }
+        return c.json({ ok: true })
+      }
+    }
+
+    // Any other text
     await sendTelegramMessage(
       chatId,
-      '⛔ No tienes permiso para usar este bot.',
+      '📸 Envíame una <b>foto</b> de un ticket para procesarla.',
       c.env.TELEGRAM_BOT_TOKEN
     )
     return c.json({ ok: true })
@@ -48,25 +139,25 @@ export async function telegramWebhookHandler (c: Context<{ Bindings: Env }>): Pr
 
   // Only process photo messages
   if (!message.photo || message.photo.length === 0) {
-    if (message.text?.startsWith('/start') === true) {
-      await sendTelegramMessage(
-        chatId,
-        '👋 ¡Hola! Envíame una foto de un ticket y extraeré la fecha, comercio y total automáticamente.',
-        c.env.TELEGRAM_BOT_TOKEN
-      )
-    } else {
-      await sendTelegramMessage(
-        chatId,
-        '📸 Envíame una <b>foto</b> de un ticket para procesarla.',
-        c.env.TELEGRAM_BOT_TOKEN
-      )
-    }
+    await sendTelegramMessage(
+      chatId,
+      '📸 Envíame una <b>foto</b> de un ticket para procesarla.',
+      c.env.TELEGRAM_BOT_TOKEN
+    )
     return c.json({ ok: true })
   }
 
   // Acknowledge immediately — Telegram requires response within 5s
   // We use waitUntil to process async without blocking the response
-  const processingPromise = processTicketPhoto(message.photo, message.message_id, chatId, c.env)
+  const processingPromise = processTicketPhoto(
+    message.photo,
+    message.message_id,
+    chatId,
+    userId,
+    isAdmin,
+    adminUserId,
+    c.env
+  )
   c.executionCtx.waitUntil(processingPromise)
 
   await sendTelegramMessage(
@@ -82,6 +173,9 @@ async function processTicketPhoto (
   photos: NonNullable<TelegramUpdate['message']>['photo'],
   messageId: number,
   chatId: number,
+  userId: number,
+  isAdmin: boolean,
+  adminUserId: number,
   env: Env
 ): Promise<void> {
   if (!photos) return
@@ -127,6 +221,15 @@ async function processTicketPhoto (
     lines.push('Puedes revisarlo en Finper → Tickets pendientes.')
 
     await sendTelegramMessage(chatId, lines.join('\n'), env.TELEGRAM_BOT_TOKEN)
+
+    // 6. Notify admin if the sender is not the admin
+    if (!isAdmin) {
+      const adminLines: string[] = [`🔔 <b>Nuevo ticket de usuario <code>${userId}</code></b>`, '']
+      adminLines.push(`🏪 Comercio: ${extraction.store ?? 'No detectado'}`)
+      adminLines.push(`📅 Fecha: ${extraction.date ? formatDate(extraction.date) : 'No detectada'}`)
+      adminLines.push(`💶 Total: ${extraction.amount != null ? `${extraction.amount.toFixed(2)} €` : 'No detectado'}`)
+      await sendTelegramMessage(adminUserId, adminLines.join('\n'), env.TELEGRAM_BOT_TOKEN)
+    }
   } catch (err) {
     console.error('Error processing ticket:', err)
     await sendTelegramMessage(

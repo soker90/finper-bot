@@ -19,3 +19,10 @@ CREATE TABLE IF NOT EXISTS tickets (
 
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at DESC);
+
+-- Users allowed to send tickets to the bot (managed by the admin via bot commands)
+CREATE TABLE IF NOT EXISTS allowed_users (
+  user_id   INTEGER PRIMARY KEY,  -- Telegram user ID
+  added_by  INTEGER NOT NULL,      -- Telegram user ID of the admin who added them
+  added_at  INTEGER NOT NULL       -- Unix timestamp (ms)
+);

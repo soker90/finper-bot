@@ -64,7 +64,7 @@ export type Env = {
   // Secrets
   TELEGRAM_BOT_TOKEN: string
   TELEGRAM_SECRET_TOKEN: string
-  TELEGRAM_ALLOWED_USER_ID: string
+  TELEGRAM_ADMIN_USER_ID: string
   GEMINI_API_KEY: string
   API_SECRET_KEY: string
   // Vars
