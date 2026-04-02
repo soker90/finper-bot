@@ -3,7 +3,7 @@ import type { GeminiExtraction } from '../types'
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
 
 const SYSTEM_SCHEMA = `Devuelve un objeto JSON con los siguientes campos:
-- "date": Fecha en timestamp Unix (milisegundos) o null si no hay.
+- "date": Fecha en formato "YYYY-MM-DD" (ejemplo: "2026-04-02") o null si no hay.
 - "store": Nombre del comercio o null.
 - "amount": Importe total como decimal o null.
 - "payment_method": Método de pago ("efectivo", "tarjeta", etc.) o null.`
@@ -18,6 +18,27 @@ interface GeminiResponse {
       parts: Array<{ text: string }>
     }
   }>
+}
+
+interface GeminiRawExtraction {
+  date: string | null
+  store: string | null
+  amount: number | null
+  payment_method: string | null
+}
+
+/**
+ * Converts a "YYYY-MM-DD" date string to a Unix timestamp in milliseconds.
+ * Uses 12:00 UTC to avoid any timezone-related date shifts.
+ */
+function parseDateString (dateStr: string | null): number | null {
+  if (!dateStr) return null
+  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return null
+  const [, year, month, day] = match
+  // Use noon UTC to prevent day boundary issues across timezones
+  const ts = Date.UTC(Number(year), Number(month) - 1, Number(day), 12, 0, 0)
+  return isNaN(ts) ? null : ts
 }
 
 /**
@@ -54,9 +75,9 @@ export async function extractReceiptData (
 
   try {
     const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-    const parsed = JSON.parse(cleaned) as GeminiExtraction
+    const parsed = JSON.parse(cleaned) as GeminiRawExtraction
     return {
-      date: parsed.date ?? null,
+      date: parseDateString(parsed.date),
       store: parsed.store ?? null,
       amount: parsed.amount ?? null,
       raw_text: '',
@@ -95,9 +116,9 @@ export async function extractExpenseFromText (
 
   try {
     const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-    const parsed = JSON.parse(cleaned) as GeminiExtraction
+    const parsed = JSON.parse(cleaned) as GeminiRawExtraction
     return {
-      date: parsed.date ?? null,
+      date: parseDateString(parsed.date),
       store: parsed.store ?? null,
       amount: parsed.amount ?? null,
       raw_text: userText,
