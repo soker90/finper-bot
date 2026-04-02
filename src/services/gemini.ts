@@ -1,33 +1,16 @@
 import type { GeminiExtraction } from '../types'
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'
 
-const IMAGE_EXTRACTION_PROMPT = `Analiza esta imagen de un ticket o recibo de compra y extrae los siguientes datos en formato JSON:
+const SYSTEM_SCHEMA = `Devuelve un objeto JSON con los siguientes campos:
+- "date": Fecha en timestamp Unix (milisegundos) o null si no hay.
+- "store": Nombre del comercio o null.
+- "amount": Importe total como decimal o null.
+- "payment_method": Método de pago ("efectivo", "tarjeta", etc.) o null.`
 
-1. "date": La fecha de la compra. Devuélvela como timestamp Unix en milisegundos (número). Si no encuentras fecha, devuelve null.
-2. "store": El nombre del comercio o establecimiento. Si no lo encuentras, devuelve null.
-3. "amount": El importe total pagado como número decimal (sin símbolo de moneda). Busca el TOTAL, no subtotales. Si no lo encuentras, devuelve null.
-4. "payment_method": El método de pago si aparece en el ticket (por ejemplo: "efectivo", "tarjeta", "visa", "mastercard", nombre de un banco). Si no lo encuentras, devuelve null.
+const IMAGE_EXTRACTION_PROMPT = `Analiza esta imagen de un ticket/recibo e identifica los datos. ${SYSTEM_SCHEMA}`
 
-Responde ÚNICAMENTE con el objeto JSON, sin texto adicional, sin bloques de código markdown.
-
-Ejemplo de respuesta:
-{"date":1704067200000,"store":"Mercadona","amount":45.67,"payment_method":"efectivo"}
-`
-
-const TEXT_EXTRACTION_PROMPT = `Analiza este mensaje de texto en el que un usuario describe un gasto y extrae los siguientes datos en formato JSON:
-
-1. "date": La fecha del gasto si se menciona. Devuélvela como timestamp Unix en milisegundos (número). Si no se menciona, devuelve null.
-2. "store": El nombre del comercio o establecimiento si se menciona. Si no, devuelve null.
-3. "amount": El importe del gasto como número decimal (sin símbolo de moneda). Si no se menciona, devuelve null.
-4. "payment_method": El método de pago si se menciona (por ejemplo: "efectivo", "tarjeta", nombre de un banco como "bankinter", "santander", etc.). Si no se menciona, devuelve null.
-
-El mensaje puede ser informal y no contener todos los datos. Extrae solo lo que esté claramente indicado.
-Responde ÚNICAMENTE con el objeto JSON, sin texto adicional, sin bloques de código markdown.
-
-Ejemplo: "He gastado 10€ en la frutería y he pagado con bankinter"
-Respuesta: {"date":null,"store":"frutería","amount":10.00,"payment_method":"bankinter"}
-`
+const TEXT_EXTRACTION_PROMPT = `Analiza este gasto descrito por el usuario e identifica los datos solicitados. ${SYSTEM_SCHEMA}`
 
 interface GeminiResponse {
   candidates: Array<{
@@ -62,7 +45,8 @@ export async function extractReceiptData (
     ],
     generationConfig: {
       temperature: 0.1,
-      maxOutputTokens: 1024
+      maxOutputTokens: 1024,
+      responseMimeType: "application/json"
     }
   }
 
@@ -102,7 +86,8 @@ export async function extractExpenseFromText (
     ],
     generationConfig: {
       temperature: 0.1,
-      maxOutputTokens: 512
+      maxOutputTokens: 512,
+      responseMimeType: "application/json"
     }
   }
 
