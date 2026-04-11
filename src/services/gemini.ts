@@ -1,6 +1,6 @@
 import type { GeminiExtraction } from '../types'
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent'
 
 const SYSTEM_SCHEMA = `Devuelve un objeto JSON con los siguientes campos:
 - "date": Fecha en formato "YYYY-MM-DD" (ejemplo: "2026-04-02") o null si no hay.
