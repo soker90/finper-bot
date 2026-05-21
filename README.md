@@ -1,5 +1,9 @@
 # ticket-bot
 
+> ⚠️ **Este repositorio ha sido migrado.**
+> El código se ha trasladado al monorepo [soker90/finper](https://github.com/soker90/finper) bajo `packages/bot`.
+> Este repositorio está archivado y ya no se mantiene activamente.
+
 Bot de Telegram para procesar fotos de tickets de compra. Extrae automáticamente la fecha, comercio y total usando Gemini Flash Vision, almacena la imagen en Cloudflare R2 y guarda los datos en Cloudflare D1 para su posterior revisión en Finper.
 
 ## Stack
